@@ -8,6 +8,7 @@ import onnx
 from onnxsim import simplify
 from sam2.build_sam import build_sam2
 from sam2.modeling.sam2_base import SAM2Base
+from sam2.utils.transforms import SAM2Transforms
 
 
 class SAM2ImageEncoder(nn.Module):
@@ -55,6 +56,12 @@ class SAM2ImageDecoder(nn.Module):
         self.model = sam_model
         self.img_size = sam_model.image_size
         self.multimask_output = multimask_output
+        self._transforms = SAM2Transforms(
+            resolution=self.model.image_size,
+            mask_threshold=0.0,
+            max_hole_area=0,
+            max_sprinkle_area=0,
+        )
 
     @torch.no_grad()
     def forward(
@@ -74,7 +81,7 @@ class SAM2ImageDecoder(nn.Module):
         high_res_feats = [high_res_feats_0, high_res_feats_1]
         image_embed = image_embed
 
-        masks, iou_predictions, _, _ = self.mask_decoder.predict_masks(
+        low_res_masks, iou_predictions, _, _ = self.mask_decoder.predict_masks(
             image_embeddings=image_embed,
             image_pe=self.prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embedding,
@@ -84,18 +91,21 @@ class SAM2ImageDecoder(nn.Module):
         )
 
         if self.multimask_output:
-            masks = masks[:, 1:, :, :]
+            low_res_masks = low_res_masks[:, 1:, :, :]
             iou_predictions = iou_predictions[:, 1:]
         else:
-            masks, iou_pred = (
+            low_res_masks, iou_predictions = (
                 self.mask_decoder._dynamic_multimask_via_stability(
-                    masks, iou_predictions
+                    low_res_masks, iou_predictions
                 )
             )
 
-        masks = torch.clamp(masks, -32.0, 32.0)
+        masks = self._transforms.postprocess_masks(
+            low_res_masks, self.img_size
+        )
+        low_res_masks = torch.clamp(low_res_masks, -32.0, 32.0)
 
-        return masks, iou_predictions
+        return masks, iou_predictions, low_res_masks
 
     def _embed_points(
         self, point_coords: torch.Tensor, point_labels: torch.Tensor
@@ -190,7 +200,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     input_size = (1024, 1024)
-    multimask_output = True
+    multimask_output = False
     model_type = args.model_type
     if model_type == "sam2_hiera_tiny":
         model_cfg = "sam2_hiera_t.yaml"
@@ -247,7 +257,7 @@ if __name__ == "__main__":
         [input_size[0], input_size[1]], dtype=torch.float
     )
 
-    masks, scores = sam2_decoder(
+    masks, scores, low_res_masks = sam2_decoder(
         image_embed,
         high_res_feats_0,
         high_res_feats_1,
@@ -282,7 +292,7 @@ if __name__ == "__main__":
             "mask_input",
             "has_mask_input",
         ],
-        output_names=["masks", "iou_predictions"],
+        output_names=["masks", "iou_predictions", "low_res_masks"],
         dynamic_axes={
             "point_coords": {0: "num_labels", 1: "num_points"},
             "point_labels": {0: "num_labels", 1: "num_points"},
