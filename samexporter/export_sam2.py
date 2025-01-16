@@ -19,32 +19,40 @@ class SAM2ImageEncoder(nn.Module):
         self.no_mem_embed = sam_model.no_mem_embed
 
     def forward(self, x: torch.Tensor) -> tuple[Any, Any, Any]:
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x)
+        print("0")
         backbone_out = self.image_encoder(x)
+        print("1")
         backbone_out["backbone_fpn"][0] = self.model.sam_mask_decoder.conv_s0(
             backbone_out["backbone_fpn"][0]
         )
+        print("2")
         backbone_out["backbone_fpn"][1] = self.model.sam_mask_decoder.conv_s1(
             backbone_out["backbone_fpn"][1]
         )
-
+        print("3")
         feature_maps = backbone_out["backbone_fpn"][
             -self.model.num_feature_levels :
         ]
+        print("4")
         vision_pos_embeds = backbone_out["vision_pos_enc"][
             -self.model.num_feature_levels :
         ]
-
+        print("5")
         feat_sizes = [(x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
 
+        print("6")
         # flatten NxCxHxW to HWxNxC
         vision_feats = [x.flatten(2).permute(2, 0, 1) for x in feature_maps]
+        print("7")
         vision_feats[-1] = vision_feats[-1] + self.no_mem_embed
-
+        print("8")
         feats = [
             feat.permute(1, 2, 0).reshape(1, -1, *feat_size)
             for feat, feat_size in zip(vision_feats[::-1], feat_sizes[::-1])
         ][::-1]
-
+        print("9")
         return feats[0], feats[1], feats[2]
 
 
